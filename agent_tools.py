@@ -1,20 +1,15 @@
 from tavily import TavilyClient
 import os
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field
-from typing import List
-from pydantic_ai import Agent, RunContext, Tool
-from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.providers.openai import OpenAIProvider
 from typing import Annotated
-import asyncio
-from datetime import datetime
 from google import genai
 from google.genai import types
 from PIL import Image
 from dataclasses import dataclass, field
 from langchain_community.document_loaders import WebBaseLoader
 import re
+import json
+from pptx import Presentation
 from io import StringIO
 from contextlib import redirect_stdout
 from pydantic_graph import Graph, BaseNode, GraphRunContext, End
@@ -259,3 +254,91 @@ def get_column_description(
     """
     
     return str(column_dict)
+
+
+
+def extract_pptx_structure(file_path: Annotated[str, "The path of the powerpoint slides to extract the structure"] = 'template.pptx'):
+    """
+    Use this tool to extract the structure of the powerpoint slides and use template to insert the data in the slides.
+    Reads a PowerPoint slide deck (.pptx), extracts structure, and returns it
+    as a fully JSON-safe escaped string.
+    """
+
+    prs = Presentation(file_path)
+    slides_info = []
+
+    for slide_idx, slide in enumerate(prs.slides, start=1):
+        slide_dict = {
+            "slide_number": slide_idx,
+            "title": None,
+            "placeholders": [],
+            "text_boxes": [],
+            "images": [],
+            "tables": [],
+            "shapes": []
+        }
+
+        # Extract title
+        title_shape = slide.shapes.title
+        if title_shape:
+            slide_dict["title"] = title_shape.text
+
+        # Process shapes
+        for shape in slide.shapes:
+            shape_info = {
+                "id": shape.shape_id,
+                "type": str(shape.shape_type),  # convert to string
+                "name": shape.name
+            }
+
+            # TEXT
+            if shape.has_text_frame:
+                text_content = "\n".join([p.text for p in shape.text_frame.paragraphs])
+                slide_dict["text_boxes"].append({
+                    "shape_id": shape.shape_id,
+                    "name": shape.name,
+                    "text": text_content
+                })
+
+            # PLACEHOLDERS
+            if shape.is_placeholder:
+                slide_dict["placeholders"].append({
+                    "shape_id": shape.shape_id,
+                    "name": shape.name,
+                    "placeholder_type": str(shape.placeholder_format.type)
+                })
+
+            # IMAGES
+            if shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
+                slide_dict["images"].append({
+                    "shape_id": shape.shape_id,
+                    "name": shape.name,
+                    "image_filename": shape.image.filename,
+                    "content_type": shape.image.content_type,
+                    "ext": shape.image.ext
+                })
+
+            # TABLES
+            if shape.has_table:
+                table_data = []
+                table = shape.table
+                for row in table.rows:
+                    table_data.append([cell.text for cell in row.cells])
+
+                slide_dict["tables"].append({
+                    "shape_id": shape.shape_id,
+                    "name": shape.name,
+                    "rows": len(table.rows),
+                    "cols": len(table.columns),
+                    "data": table_data
+                })
+
+            slide_dict["shapes"].append(shape_info)
+
+        slides_info.append(slide_dict)
+
+    # Convert entire structure to a JSON-escaped string
+    json_string = json.dumps(slides_info, ensure_ascii=False, indent=2)
+
+    return json_string
+

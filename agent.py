@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from langchain_community.document_loaders import WebBaseLoader
 import re
 from pydantic_graph import Graph, BaseNode, GraphRunContext, End
-from agent_tools import get_source_url, web_scraper, python_execution_tool, generate_and_save_image, generate_powerpoint_slides, graph_generator, get_column_list, get_column_description
+from agent_tools import get_source_url, web_scraper, python_execution_tool, generate_and_save_image, generate_powerpoint_slides, graph_generator, get_column_list, get_column_description, extract_pptx_structure
 import os
 from io import StringIO
 from contextlib import redirect_stdout
@@ -50,6 +50,7 @@ class State:
     presentation_content: list[SlideFormat] = field(default_factory=list)
     csv_path: str = field(default="")
     instruction: str = field(default="")
+    slide_name_with_number: list[str] = field(default_factory=list)
     
 
 
@@ -105,6 +106,7 @@ class SlideAgentOutput(BaseModel):
     slide: SlideFormat = Field(description="The content of the slide")
     summary: str = Field(description="The summary of the slide and instruction for the next slide, like what has been done and what to do next")
     references: list[str] = Field(description="The references of the slide")
+    slide_name_with_number: str = Field(description="The name of the slide with the number of the slide saved as <slide_name>_<slide_number>.pptx")
 
 slide_agent = Agent(
     model=model_content,
@@ -114,7 +116,9 @@ slide_agent = Agent(
            Tool(generate_and_save_image, takes_ctx=False),
            Tool(graph_generator, takes_ctx=False), 
            Tool(get_column_list, takes_ctx=False), 
-           Tool(get_column_description, takes_ctx=False)],
+           Tool(get_column_description, takes_ctx=False),
+           Tool(extract_pptx_structure, takes_ctx=False),
+           Tool(generate_powerpoint_slides, takes_ctx=False)],
     deps_type=State,
     output_type=SlideAgentOutput,
     instrument=True
@@ -125,6 +129,7 @@ async def get_slide_agent_system_prompt(ctx: RunContext[State]):
     
     prompt = f"""
     You are an expert business analyst who is proficient in generating slide decks based on given instructions and context.
+    Your goal is to generate the content and the powerpoint slide itself using pyhton pptx library and python code using the tools provided and keep track of the content and the slide generated for the deck.
 
     Here are the instructions provided by the previous agent:
     - User Query (IMPORTANT):\n {ctx.deps.user_query}
@@ -141,13 +146,40 @@ async def get_slide_agent_system_prompt(ctx: RunContext[State]):
     - python_execution_tool: to execute the python code for analysis, generating metrics, tables etc.
     - generate_and_save_image: to generate the image and save it to the current directory if required. Use this tool only if the slide requires an image. IMPORTANT: Use this tool only once per slide and always store png images.
     - graph_generator: to generate the graph and save it to the current directory if required. Use this tool only if the slide requires a graph.
+    - generate_powerpoint_slides: to generate the powerpoint slides and save it to the current directory. IMPORTANT: import the necessary libraries such as stringio, redirect_stdout, in the code.
+    - extract_pptx_structure: to extract the structure of the powerpoint slides and use template to replace the placeholders with the data in the slides.
     
-    Instructions:
+    
+    Instructions for content generation:
     - Follow the instructions provided by the previous agent strictly.
     - Use the relevant tools to generate the slide content based on the instructions and context provided by the previous agent.
     - Keep the record of the path of images and graphs generated using the generate_and_save_image and graph_generator tools.
     - Generate the slide content based on the instructions and context provided by the previous agent and return the output in json format as per the SlideFormat schema.
     - Do not forget to include the reference to the image path and graph path in the slide content so that the presentation agent can include it in the presentation.
+    - Keep the content of the slide concise and to the point so that it fits easily in a single slide.
+    
+   
+    Steps to follow for execution:
+    - Use the extract_pptx_structure tool to study the template.pptx file.
+    - Pick the rellevant slide number for the slide for example if slide content is introduction then pick the slide with introduction from the template.pptx.
+    - Write the pyhton code using pyhton pptx library to copy the relevant slides from the template.pptx and replace the placeholders with the data in the slides. Use the generate_powerpoint_slides tool to generate the powerpoint slides and save it to the current directory. IMPORTANT: import the necessary libraries such as stringio, redirect_stdout, in the code.
+    - Save the generated powerpoint slides to the current directory as <presentation_name>.pptx and print the path of the generated powerpoint slides.
+    - Keep the record of the path of the generated powerpoint slides.
+    
+    Extra instructions:
+    - Study the presentation content format
+    - Plan out the slide and content layout:
+        Slide layout:
+        - Header: The title of the slide
+        - Left Content: The text content of the slide or bullet points
+        - Right Content: The image or graph or table of the slide generated by the generate_and_save_image and graph_generator tools
+        - Layout: Landscape
+    - Important step: The template is stored as template.pptx, use extract_pptx_structure tool to extract the structure of the powerpoint slides and use template to replace the placeholders with the data in the slides.
+    - Pick the relevant slides from the template to insert the data in the slides using the generate_powerpoint_slides tool. Use the generate_powerpoint_slides tool to generate the powerpoint slides and save it to the current directory. IMPORTANT: import the necessary libraries such as stringio, redirect_stdout, in the code.
+    - Important: Do not forget to include the images on the slides generated by the generate_and_save_image and graph_generator tools.
+    - Note: Use font size 24 for the title, 16 for the text content and 14 for the bullet points.
+    
+    Note: Keep the content of the slide concise and to the point so that it fits easily in a single slide.
     
     Think step by step.
     
@@ -190,29 +222,24 @@ async def get_presentation_agent_system_prompt(ctx: RunContext[State]):
 
     prompt = f"""
     You are a presentation editor who edits the presentation based on the instructions and all the slides of the presentation provided by the previous agent.
+    
+    you will be provided with the slide name and number, write python code to merge the slides into a single powerpoint presentation. If needed add some complementary slides.
 
     Here are the instructions, keypoints, title, slides and conclusion provided by the previous agent:
     - User Query:\n {ctx.deps.user_query}
     - ExternalContext:\n {ctx.deps.context}
     - Presentation Content:\n {presentation_content_formatted}
+    - Slide Name with Number:\n {str(ctx.deps.slide_name_with_number)}
     \n\n
     
     Tools available:
     - generate_powerpoint_slides: to generate the powerpoint slides and save it to the current directory. IMPORTANT: import the necessary libraries such as stringio, redirect_stdout, in the code.
     
-    Instructions:
-    - Study the presentation content format
-    - Plan out the slide and content layout:
-        Slide layout:
-        - Header: The title of the slide
-        - Left Content: The text content of the slide or bullet points
-        - Right Content: The image or graph or table of the slide generated by the generate_and_save_image and graph_generator tools
-        - Layout: Landscape
-    - Important: Do not forget to include the images on the slides generated by the generate_and_save_image and graph_generator tools.
-    - Note: Use font size 24 for the title, 16 for the text content and 14 for the bullet points.
-    - Use the generate_powerpoint_slides tool to generate the powerpoint slides and save it to the current directory. IMPORTANT: import the necessary libraries such as stringio, redirect_stdout, in the code.
+    Steps to follow:
+    - write python code to merge the slides into a single powerpoint presentation. If needed add some complementary slides.
     
-
+    return the final powerpoint slide name with the path.
+    
    Think step by step.
 
    """
@@ -246,6 +273,7 @@ class SlideAgentNode(BaseNode[State]):
     Generating slides for the presentation
     """
     async def run(self, ctx: GraphRunContext[State]) -> "PresentationAgentNode":
+        i = 1
         for section, instruction in zip(ctx.state.sections, ctx.state.instructions):
             ctx.state.instruction = instruction
             query = f"For user query: {ctx.state.user_query}, generate the slide content for the section: {section} with the instructions: {instruction}"
@@ -254,6 +282,8 @@ class SlideAgentNode(BaseNode[State]):
             
             # Add the slide to the presentation
             ctx.state.presentation_slides.append(response_data.slide)
+            ctx.state.slide_name_with_number.append(f"slide for section {section}, slide number {i} saved as {response_data.slide_name_with_number}.pptx")
+            i += 1
             
             # for debugging
             print(f'\n\n Slide {len(ctx.state.presentation_slides)}: {response_data.slide.title}\n\n')
