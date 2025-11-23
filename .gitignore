@@ -1,0 +1,10 @@
+__pycache__/
+.env
+*.png
+*.jpg
+*.pptx
+*.ipynb
+sctarchpad.py
+run_app.bat
+run_app.sh
+
